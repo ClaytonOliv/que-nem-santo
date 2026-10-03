@@ -6,6 +6,27 @@ let current='carlo',color=colors[0][0],tool='bucket',paintMode='inside',svg,acti
 const templates={},states={};const fresh=()=>({fills:{},strokes:[]});
 for(const id of Object.keys(arts))states[id]={now:fresh(),undo:[],redo:[]};
 const state=()=>states[current],clone=x=>JSON.parse(JSON.stringify(x));
+
+const SAVE_PREFIX='que-nem-santo:painting:v1:';
+let storageFailed=false;
+function storageNotice(failed=false){
+ storageFailed=failed;
+ document.querySelectorAll('[data-save-notice]').forEach(el=>el.textContent=failed?'Não foi possível salvar neste navegador. Baixe sua pintura antes de sair.':'Salvo automaticamente neste navegador, só neste aparelho. Limpar os dados do site apaga as pinturas. Use Recomeçar para apagar o desenho atual.');
+}
+function validPainting(value){
+ const hex=v=>typeof v==='string'&&/^#[0-9a-f]{6}$/i.test(v);
+ return value&&value.version===1&&value.painting&&typeof value.painting.fills==='object'&&value.painting.fills!==null&&!Array.isArray(value.painting.fills)&&Object.entries(value.painting.fills).every(([k,v])=>/^\d+$/.test(k)&&hex(v))&&Array.isArray(value.painting.strokes)&&value.painting.strokes.every(s=>s&&typeof s.d==='string'&&/^[MLQZ0-9.,e\s+\-]+$/i.test(s.d)&&hex(s.color)&&(s.fill===true||(Number.isFinite(s.size)&&s.size>=1&&s.size<=200))&&(s.region==null||/^\d+$/.test(s.region))&&(!s.texture||['solid','pencil','crayon'].includes(s.texture)));
+}
+for(const id of Object.keys(arts)){
+ try{const raw=localStorage.getItem(SAVE_PREFIX+id);if(raw){const data=JSON.parse(raw);if(validPainting(data))states[id].now=data.painting;else storageNotice(true)}}catch{storageNotice(true)}
+}
+function savePainting(){
+ if(!svg)return;
+ try{localStorage.setItem(SAVE_PREFIX+current,JSON.stringify({version:1,painting:state().now}));localStorage.setItem(SAVE_PREFIX+'last',current);if(storageFailed)storageNotice(false)}catch{if(!storageFailed)say('O navegador não conseguiu salvar. Baixe sua pintura para guardar.');storageNotice(true)}
+}
+window.addEventListener('pagehide',savePainting);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')savePainting()});
+
 function say(message){$('#status').textContent=message;$('#status').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#status').classList.remove('show'),3200)}
 function controls(){$('#undo').disabled=!state().undo.length||busy;$('#redo').disabled=!state().redo.length||busy;$('#download').disabled=busy;$('#reset').disabled=busy}
 function remember(){const s=state();s.undo.push(clone(s.now));if(s.undo.length>40)s.undo.shift();s.redo=[];controls()}
@@ -29,7 +50,7 @@ function textureMask(kind){
  const mask=node('mask',{id,maskUnits:'userSpaceOnUse',x:0,y:0,width:1132,height:1600,'mask-type':'luminance'});mask.append(node('rect',{width:1132,height:1600,fill:`url(#${id}-grain)`}));defs.append(pattern,mask);return id;
 }
 function strokeNode(s,index){if(s.fill){const p=node('path',{d:s.d,fill:s.color,'fill-rule':'evenodd'});svg.querySelector('#strokes').append(p);return p}let clip=null;if(s.region){const region=svg.querySelector(`#r${s.region}`);if(region){const id=`clip-${index}`;clip=node('clipPath',{id});clip.append(node('path',{d:region.getAttribute('d'),'clip-rule':'evenodd'}));svg.querySelector('defs').append(clip)}}const p=node('path',{d:s.d,fill:'none',stroke:s.color,'stroke-width':s.size,'stroke-linecap':'round','stroke-linejoin':'round'});if(s.texture&&s.texture!=='solid')p.setAttribute('mask',`url(#${textureMask(s.texture)})`);if(clip)p.setAttribute('clip-path',`url(#clip-${index})`);svg.querySelector('#strokes').append(p);return p}
-function render(){if(!svg)return;const s=state().now;svg.querySelectorAll('[data-region]').forEach(p=>p.setAttribute('fill',s.fills[p.dataset.region]||'#ffffff'));svg.querySelector('#strokes').replaceChildren();svg.querySelector('defs').replaceChildren();s.strokes.forEach(strokeNode);controls()}
+function render(){if(!svg)return;const s=state().now;svg.querySelectorAll('[data-region]').forEach(p=>p.setAttribute('fill',s.fills[p.dataset.region]||'#ffffff'));svg.querySelector('#strokes').replaceChildren();svg.querySelector('defs').replaceChildren();s.strokes.forEach(strokeNode);controls();savePainting()}
 
 function smoothVector(doc){
  for(const path of doc.querySelectorAll('path[d]')){
@@ -50,7 +71,7 @@ function regionAt(e){return document.elementFromPoint(e.clientX,e.clientY)?.clos
 function fillRegion(region,value){if(!region||busy)return;const id=region.dataset.region;if((state().now.fills[id]||'#ffffff')===value&&!state().now.strokes.length)return;remember();state().now.fills[id]=value;if(state().now.strokes.length)state().now.strokes.push({d:region.getAttribute('d'),color:value,region:id,fill:true});render()}
 function startStroke(e){if(busy||!svg||e.button>0||pointerId!==null)return;const region=regionAt(e);if(!region&&(tool==='bucket'||paintMode==='inside'))return;e.preventDefault();if(tool==='bucket'){fillRegion(region,color);return}remember();const[x,y]=point(e);const s={d:`M${x},${y}L${x+.01},${y}`,color:tool==='eraser'?'#ffffff':color,size:Number($('#brushSize').value),texture:tool==='eraser'?'solid':$('#brushTexture').value,region:paintMode==='inside'?region.dataset.region:null};state().now.strokes.push(s);activeStroke={data:s,node:strokeNode(s,state().now.strokes.length-1)};pointerId=e.pointerId;$('#board').setPointerCapture(e.pointerId)}
 function moveStroke(e){if(!activeStroke||pointerId!==e.pointerId)return;e.preventDefault();const[x,y]=point(e);activeStroke.data.d+=`L${x},${y}`;activeStroke.node.setAttribute('d',activeStroke.data.d)}
-function finishStroke(e){if(e&&pointerId!==e.pointerId)return;activeStroke=null;if(pointerId!==null&&$('#board').hasPointerCapture(pointerId))$('#board').releasePointerCapture(pointerId);pointerId=null;controls()}
+function finishStroke(e){if(e&&pointerId!==e.pointerId)return;activeStroke=null;if(pointerId!==null&&$('#board').hasPointerCapture(pointerId))$('#board').releasePointerCapture(pointerId);pointerId=null;controls();savePainting()}
 $('#board').addEventListener('pointerdown',startStroke);$('#board').addEventListener('pointermove',moveStroke);$('#board').addEventListener('pointerup',finishStroke);$('#board').addEventListener('pointercancel',finishStroke);$('#board').addEventListener('lostpointercapture',()=>{activeStroke=null;pointerId=null});
 function undo(){finishStroke();const s=state();if(!s.undo.length||busy)return;s.redo.push(clone(s.now));s.now=s.undo.pop();render()}function redo(){finishStroke();const s=state();if(!s.redo.length||busy)return;s.undo.push(clone(s.now));s.now=s.redo.pop();render()}
 $('#undo').addEventListener('click',undo);$('#redo').addEventListener('click',redo);document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!['INPUT','TEXTAREA'].includes(e.target.tagName)){e.preventDefault();e.shiftKey?redo():undo()}});
@@ -61,7 +82,8 @@ async function exportPNG(blank=false){if(!svg||busy)return;finishStroke();const 
 $('#download').addEventListener('click',()=>exportPNG());$('#downloadBlank').addEventListener('click',()=>exportPNG(true));
 let cursor=[566,600];$('#board').addEventListener('keydown',e=>{if(!svg||busy)return;const dirs={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};if(dirs[e.key]){e.preventDefault();const d=dirs[e.key],step=e.shiftKey?5:25;cursor=[Math.max(1,Math.min(1131,cursor[0]+d[0]*step)),Math.max(1,Math.min(1599,cursor[1]+d[1]*step))];let ring=svg.querySelector('#keyboardCursor');if(!ring){ring=node('circle',{id:'keyboardCursor',r:14,fill:'none',stroke:'#5750bd','stroke-width':4,'pointer-events':'none'});svg.append(ring)}ring.setAttribute('cx',cursor[0]);ring.setAttribute('cy',cursor[1])}else if(e.key===' '||e.key==='Enter'){e.preventDefault();const p=svg.createSVGPoint();[p.x,p.y]=cursor;const s=p.matrixTransform(svg.getScreenCTM());fillRegion(regionAt({clientX:s.x,clientY:s.y}),tool==='eraser'?'#ffffff':color)}});$('#board').addEventListener('blur',()=>svg?.querySelector('#keyboardCursor')?.remove());
 if(document.modelContext?.registerTool){try{Promise.resolve(document.modelContext.registerTool({name:'configure_coloring',title:'Escolher desenho e material',description:'Seleciona um desenho e configura a cor e a ferramenta, preservando as pinturas da sessão.',inputSchema:{type:'object',properties:{drawing:{type:'string',enum:Object.keys(arts)},color:{type:'string',pattern:'^#[0-9a-fA-F]{6}$'},tool:{type:'string',enum:['bucket','brush','eraser']}},additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:false},execute:async input=>{if(!input||typeof input!=='object'||Object.keys(input).some(k=>!['drawing','color','tool'].includes(k))||(input.drawing!==undefined&&!arts[input.drawing])||(input.color!==undefined&&!/^#[0-9a-f]{6}$/i.test(input.color))||(input.tool!==undefined&&!['bucket','brush','eraser'].includes(input.tool)))throw Error('Configuração inválida');if(busy)throw Error('Aguarde carregar');if(input.drawing)await selectArt(input.drawing);if(input.color)chooseColor(input.color);if(input.tool)setTool(input.tool);return{drawing:current,color,tool}}})).catch(()=>{})}catch{}}
-selectArt('carlo');
+let restoredArt='carlo';try{const last=localStorage.getItem(SAVE_PREFIX+'last');if(arts[last])restoredArt=last}catch{}
+selectArt(restoredArt);
 
 
 $('#brushTexture').addEventListener('change',()=>{finishStroke();setTool('brush');say('Material selecionado para os próximos traços.')});
